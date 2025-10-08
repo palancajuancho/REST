@@ -1,154 +1,99 @@
-// server.js
-// Courtify Mini API: availability check + booking estimate
-// Run: npm install && npm start  → http://localhost:3000
+// ===== Court Availability =====
 
-const express = require('express');
-const app = express();
-app.use(express.json());
+// (A) sample courts + seeded bookings for demo
+const courts = [
+  { id: "C001", open: "08:00", close: "22:00" },
+  { id: "C002", open: "09:00", close: "21:00" }
+];
 
-// ---- In-memory data (tiny seed) ----
-const facilities = {
-  'courtify-sportsplex': {
-    id: 'courtify-sportsplex',
-    name: 'Courtify Sportsplex',
-    hourlyRate: 500, // PHP/hour
-    open: { start: '08:00', end: '22:00' },
-    // Example bookings to demonstrate conflicts
-    bookings: {
-      '2025-10-10': [ { start: '10:00', end: '11:30' } ],
-      '2025-10-11': [ { start: '15:00', end: '16:00' } ]
-    }
+// in-memory: bookings[courtId][date] = [{ start, end }]
+const bookings = {
+  C001: {
+    // seed an existing booking so you can demo the 409 overlap
+    "2025-10-09": [{ start: "14:00", end: "15:00" }]
   }
 };
 
-// ---- Helpers ----
-function toMinutes(hhmm) {
-  const [h, m] = (hhmm || '').split(':').map(Number);
-  return h * 60 + m;
-}
-function isValidDate(s) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
-function isValidTime(s) {
-  if (!/^\d{2}:\d{2}$/.test(s)) return false;
-  const [h, m] = s.split(':').map(Number);
-  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
-}
-function overlaps(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && bStart < aEnd;
-}
-function fmt(mins) {
-  const h = String(Math.floor(mins / 60)).padStart(2, '0');
-  const m = String(mins % 60).padStart(2, '0');
-  return `${h}:${m}`;
+// (B) helpers
+function toMinutes(t) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
+function toTime(mins) { const h = String(Math.floor(mins / 60)).padStart(2, "0"); const m = String(mins % 60).padStart(2, "0"); return `${h}:${m}`; }
+
+function isISODate(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(new Date(s).getTime());
 }
 
-// ---- Endpoints ----
+function isValidSlot(s) {
+  // HH:mm-HH:mm (24h)
+  return /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(s);
+}
 
-// POST /api/availability/check
-app.post('/api/availability/check', (req, res, next) => {
+function parseSlot(s) {
+  const [startStr, endStr] = s.split("-");
+  const start = toMinutes(startStr);
+  const end = toMinutes(endStr);
+  return { startStr, endStr, start, end };
+}
+
+function isPastDate(dateStr) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(dateStr); d.setHours(0,0,0,0);
+  return d < today;
+}
+
+// (C) route
+app.post("/api/court/availability/check", (req, res) => {
   try {
-    const { facilityId, date, startTime, durationMinutes } = req.body || {};
+    const { courtId, date, timeSlot } = req.body || {};
 
-    if (!facilityId || typeof facilityId !== 'string') {
-      return res.status(400).json({ message: 'facilityId is required' });
+    // 400 / 422 — basic field validation
+    if (!courtId || !date || !timeSlot) {
+      return res.status(400).json({
+        message: "Invalid request. Please provide courtId, date, and timeSlot."
+      });
     }
-    if (!date || !isValidDate(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+    if (!isISODate(date) || !isValidSlot(timeSlot)) {
+      return res.status(422).json({
+        message: "Invalid request. date must be YYYY-MM-DD and timeSlot must be HH:mm-HH:mm."
+      });
     }
-    if (!startTime || !isValidTime(startTime)) {
-      return res.status(400).json({ message: 'startTime must be HH:MM' });
-    }
-    const dur = Number(durationMinutes);
-    if (!Number.isInteger(dur) || dur < 30) {
-      return res.status(400).json({ message: 'durationMinutes must be integer ≥ 30' });
-    }
-
-    const fac = facilities[facilityId];
-    if (!fac) return res.status(404).json({ message: 'facility not found' });
-
-    const openStart = toMinutes(fac.open.start);
-    const openEnd   = toMinutes(fac.open.end);
-    const start     = toMinutes(startTime);
-    const end       = start + dur;
-
-    if (start < openStart || end > openEnd) {
-      return res.status(422).json({ message: `Requested time outside open hours ${fac.open.start}-${fac.open.end}` });
+    if (isPastDate(date)) {
+      return res.status(422).json({ message: "Date cannot be in the past." });
     }
 
-    const dayBookings = fac.bookings[date] || [];
-    const conflict = dayBookings.find(b =>
-      overlaps(start, end, toMinutes(b.start), toMinutes(b.end))
-    );
+    // 404 — court not found
+    const court = courts.find(c => c.id === courtId);
+    if (!court) return res.status(404).json({ message: "Court ID not found." });
 
-    const response = {
-      facilityId,
-      date,
-      startTime,
-      endTime: fmt(end),
-      isAvailable: !conflict
-    };
-
-    if (conflict) {
-      response.conflict = conflict;
-
-      // Suggest next available slot with same duration (same day)
-      const slots = dayBookings.slice().sort((a, b) => toMinutes(a.start) - toMinutes(b.start));
-      let cur = Math.max(start, openStart);
-      for (const b of slots) {
-        const bs = toMinutes(b.start), be = toMinutes(b.end);
-        if (cur + dur <= bs) {
-          response.nextAvailable = { startTime: fmt(cur), endTime: fmt(cur + dur) };
-          return res.json(response);
-        }
-        cur = Math.max(cur, be);
-      }
-      if (cur + dur <= openEnd) {
-        response.nextAvailable = { startTime: fmt(cur), endTime: fmt(cur + dur) };
-      }
+    // derive minutes, enforce 1-hour rule and open hours
+    const { startStr, endStr, start, end } = parseSlot(timeSlot);
+    if (end - start !== 60) {
+      return res.status(422).json({ message: "Only 1-hour time slots are allowed." });
+    }
+    const open = toMinutes(court.open), close = toMinutes(court.close);
+    if (start < open || end > close) {
+      return res.status(422).json({
+        message: `Requested time is outside open hours (${court.open}-${court.close}).`
+      });
     }
 
-    return res.json(response);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/booking/estimate
-app.post('/api/booking/estimate', (req, res, next) => {
-  try {
-    const { facilityId, durationMinutes } = req.body || {};
-    if (!facilityId || typeof facilityId !== 'string') {
-      return res.status(400).json({ message: 'facilityId is required' });
-    }
-    const dur = Number(durationMinutes);
-    if (!Number.isInteger(dur) || dur < 30) {
-      return res.status(400).json({ message: 'durationMinutes must be integer ≥ 30' });
+    // 409 — overlap
+    const day = (bookings[courtId] && bookings[courtId][date]) || [];
+    const hasOverlap = day.some(b => !(end <= toMinutes(b.start) || start >= toMinutes(b.end)));
+    if (hasOverlap) {
+      return res.status(409).json({ message: "Court is not available at the requested time." });
     }
 
-    const fac = facilities[facilityId];
-    if (!fac) return res.status(404).json({ message: 'facility not found' });
-
-    const estimatedPrice = +(fac.hourlyRate * (dur / 60)).toFixed(2);
+    // 200 — success
     return res.json({
-      facilityId,
-      hourlyRate: fac.hourlyRate,
-      durationMinutes: dur,
-      estimatedPrice,
-      currency: 'PHP'
+      courtId,
+      date,
+      timeSlot: `${startStr}-${endStr}`,
+      isAvailable: true,
+      message: "Court is available for booking."
     });
-  } catch (err) {
-    next(err);
+  } catch (e) {
+    // 500 — unexpected
+    return res.status(500).json({ message: "Something went wrong." });
   }
 });
 
-// JSON-only error handler
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ message: 'Something went wrong' });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Courtify Mini API running at http://localhost:${PORT}`);
-});
