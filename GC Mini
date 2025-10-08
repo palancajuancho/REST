@@ -1,0 +1,76 @@
+# GC Mini-Project Plan — Courtify Mini API
+
+## A) Context
+- **Feature / flow this supports**: Real-time court slot availability check for a chosen facility & time.
+- **User outcome**: Players instantly know if a desired time slot is free and how much it would cost.
+- **Why this is a win today**: Unblocks core booking flow (prevents double-bookings, wasted time) and proves the backbone of the app’s value prop: verified availability + instant clarity. :contentReference[oaicite:1]{index=1}
+
+## B) API Choice (pick two)
+[x] Validate/Check (availability/eligibility/inventory)
+[x] Calculate (quote/fee)
+
+## C) Endpoint Mini-Spec (stack-agnostic)
+- **Method + Path**:
+  - `POST /api/availability/check`
+  - `POST /api/booking/estimate`
+- **Purpose (1 sentence)**:
+  - `/api/availability/check`: Given facility, date, start time, and duration → return availability (and a suggested next free slot if blocked).
+  - `/api/booking/estimate`: Given facility and duration → return price estimate using facility hourly rate.
+- **Request Body – samples**
+  - Availability:
+    ```json
+    { "facilityId": "courtify-sportsplex", "date": "2025-10-10", "startTime": "09:00", "durationMinutes": 60 }
+    ```
+  - Estimate:
+    ```json
+    { "facilityId": "courtify-sportsplex", "durationMinutes": 90 }
+    ```
+- **Success Response – samples**
+  - Availability (200):
+    ```json
+    {
+      "facilityId": "courtify-sportsplex",
+      "date": "2025-10-10",
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "isAvailable": true
+    }
+    ```
+    *(If conflict)*
+    ```json
+    {
+      "facilityId": "courtify-sportsplex",
+      "date": "2025-10-10",
+      "startTime": "10:30",
+      "endTime": "11:30",
+      "isAvailable": false,
+      "conflict": { "start": "10:00", "end": "11:30" },
+      "nextAvailable": { "startTime": "11:30", "endTime": "12:30" }
+    }
+    ```
+  - Estimate (200):
+    ```json
+    { "facilityId": "courtify-sportsplex", "hourlyRate": 500, "durationMinutes": 90, "estimatedPrice": 750, "currency": "PHP" }
+    ```
+- **Error Responses**
+  - 400/422 (validation): `{ "message": "durationMinutes must be integer ≥ 30" }`
+  - 404 (not found): `{ "message": "facility not found" }`
+  - 409 (conflict, if relevant): *(not used here)*
+  - 500 (unexpected): `{ "message": "Something went wrong" }`
+- **Validation Rules**
+  - `facilityId`: required, string; must exist in data source
+  - `date`: required, ISO `YYYY-MM-DD`
+  - `startTime`: required for availability, `HH:MM` 24h
+  - `durationMinutes`: required, integer ≥ 30
+  - Requested window must be within facility open hours
+- **Data Source**
+  - [x] In-memory  ☐ File  ☐ DB  ☐ External API
+- **Non-goals (30 min)**
+  1) Real payments or bookings persistence  2) Auth, multi-facility CRUD, timezone edge cases
+
+## D) Test Plan (2 calls only)
+- **Happy path**: POST `/api/availability/check` with a free slot → expect `200` + `"isAvailable": true`.
+- **Error path**: POST `/api/availability/check` missing `facilityId` → expect `400` + `{ "message": "facilityId is required" }`.
+
+*(Saved as `/docs/mini-api-plan.md`.)*
+
