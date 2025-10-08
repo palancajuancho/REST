@@ -1,0 +1,14 @@
+{
+  "name": "courtify-mini-api",
+  "version": "1.0.0",
+  "description": "GC mini-project: Ship one useful API (Courtify availability + estimate).",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
